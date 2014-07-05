@@ -1,4 +1,4 @@
 webby
 =====
 
-Attempt of a micro web framework in Python 
+An attempt of a micro web framework in Python 
