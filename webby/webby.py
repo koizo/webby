@@ -6,12 +6,7 @@ Its implemented with 3 base classes: Request,Response and Webby. Its based on
 wsgiref.
 Webby works by registering the url paths with functions on a url_dict that will
 be used when requests arrive.
-A very basic example is provider in the example.py
-
-Homepage and documentation: http://webby.koizo.net/
-
-Copyright (c) 2014, Hugo Correia.
-License: APACHE License
+A very basic example is provider in the example.py§
 """
 
 __author__ = 'Hugo Correia'
@@ -29,15 +24,16 @@ import json
 urls_dict = {}
 
 HTTP_CODE = {
-	200: 'OK',
-	201: 'CREATED',
-	202: 'ACCEPTED',
-	400: 'BAD REQUEST',
-	401: 'UNAUTHORIZED',
-	403: 'FORBIDDEN',
-	404: 'NOT FOUND',
-	500: 'INTERNAL SERVER ERROR',
-	501: 'NOT IMPLEMENTED',
+    200: 'OK',
+    201: 'CREATED',
+    202: 'ACCEPTED',
+    301: 'REDIRECT',
+    400: 'BAD REQUEST',
+    401: 'UNAUTHORIZED',
+    403: 'FORBIDDEN',
+    404: 'NOT FOUND',
+    500: 'INTERNAL SERVER ERROR',
+    501: 'NOT IMPLEMENTED',
 }
 
 #
@@ -45,7 +41,8 @@ HTTP_CODE = {
 #
 class WebbyException(Exception):
     """ class for webby exception handling """
-    pass
+    def __init__(self, message):
+        print "WebbyException: "+message
 
 #
 # Framework
@@ -98,21 +95,19 @@ class Request(object):
     def get(self):
         """Gets a value from a variable sent by GET"""
         if environ['QUERY_STRING'] is not '':
-        	self.query_args = dict(urlparse.parse_qs(environ['QUERY_STRING']))
-       	else:
-            self.query_args = dict()
+        	query_args = dict(urlparse.parse_qs(environ['QUERY_STRING']))
+        else:
+            query_args = dict()
+
+        return query_args
 
     @property
     def remote_addr(self):
         """Remote IP from the client"""
         return self.environ['REMOTE_ADDR']
 
-    def post(self,value):
-        """Get a value from a variable sent by POST"""
-        return urlparse.parse_qs(self.environ['wsgi.input'].readline().decode(),True)
-
     @property
-    def forms(self):
+    def body(self):
         """Form data passed by POST OR PUT"""
         if self.method not in ['POST', 'PUT']:
             raise AttributeError("Ilegal method type: "+self.method)
@@ -121,7 +116,7 @@ class Request(object):
             body_size = int(self.environ['CONTENT_LENGTH'])
             return dict(urlparse.parse_qsl(self.environ['wsgi.input'].read(body_size).decode('utf-8')))
         except ValueError:
-            return None
+            return dict()
 
     @property
     def files(self):
@@ -135,30 +130,41 @@ class Request(object):
 class Response(object):
     """Response class to be used for the resposes to the cliente"""
 
-    status = 200
-    content_type = 'text/html'
+    _status = 200
+    _content_type = 'text/html'
 
-    def __init__(self,start_response):
+    def __init__(self, start_response):
         self.headers = {'content-type': 'text/html'}
         self.start_response = start_response
 
+    @property
+    def status(self):
+        return self._status
 
-    def _status(self,statuscode):
-        """Setter for status"""
-        if statuscode in HTTP_CODE:
-            self.status = statuscode
-        else:
+    @status.setter
+    def status(self, value):
+        if value in HTTP_CODE:
+            self._status = value
+        else:    
             raise AttributeError("Ilegal Status Code.")
 
-    def _content_type(self,content_type):
+    @property
+    def content_type(self):
         """Setter for content_type"""
-        self.content_type = content_type
+        return self._content_type
 
+    @content_type.setter
+    def content_type(self, value):
+        """Setter for content_type"""
+        self._content_type = value
 
-    def sendresponse(self,response):
+    def sendresponse(self, response):
         """Parse the response and send to the client with the correct codes"""
-        self.start_response(str(self.status)+' OK', [('content-type', self.content_type)])
-        #print response
+        if self.status== 301:
+            self.start_response('301 Redirect', [('Location', self.redirect),])
+            return "Redirecting to "+self.redirect
+
+        self.start_response(str(self.status)+' '+HTTP_CODE[self.status], [('content-type', self.content_type)])
         return [response]
 
 
@@ -168,8 +174,8 @@ class Webby(object):
         pass
 
     def __call__(self, environ, start_response):
-        self.request     = Request(environ)
-        self.response     = Response(start_response)
+        self.request = Request(environ)
+        self.response = Response(start_response)
         print self.request
         return self.dispatch()
 
@@ -183,20 +189,21 @@ class Webby(object):
         if path in urls_dict:
             if self.request.method in urls_dict[path]['request_methods']:
                 return self.response.sendresponse(urls_dict[path]['function'](self.request))
-            else:
-                return self.errorhandler(404)
-        else:
-            return self.errorhandler(404)
+
+        return self.errorhandler(404)
 
     def register(self, func, **params):
         """Decorator to register paths"""
         def decorator(f):
             """Saves in url_dict the Methods and the function to run from a path"""
+            if f is None:
+                raise WebbyException("Function is Invalid")
+
             path = func.lstrip('/')
             if 'methods' in params:
-                urls_dict[path]= {'function':f, 'request_methods': params['methods']}
+                urls_dict[path] ={'function': f, 'request_methods': params['methods']}
             else:
-                urls_dict[path]= {'function':f, 'request_methods': {"GET", "POST", 'PUT', 'DELETE'}}
+                urls_dict[path] ={'function': f, 'request_methods': {"GET", "POST", 'PUT', 'DELETE'}}
             return f
 
         return decorator
@@ -207,11 +214,18 @@ class Webby(object):
 
     def errorhandler(self, code, function=None):
         """handling errors with Response"""
-        self.response._status(code)
+        self.response.status = code
         html_response = HTMLErrorResponse(self.response)
         return self.response.sendresponse(html_response.html)
 
-    def serve(self,app=None):
+
+    def redirect(self, url):
+        """Redirects the request to another URL. Needs to be better"""
+        self.response.status = 301
+        self.response.redirect = url
+
+
+    def serve(self, app=None):
         """Creates a http server"""
         if app is None:
             httpd = make_server('', 8000, self)
@@ -224,16 +238,16 @@ class Webby(object):
 # Error Handling
 #
 class HTMLErrorResponse(object):
-	""" class for http response for errors"""
+    """class for http response for errors"""
 
-	def __init__(self,response):
-		self.response_body = "<html>" \
-							 "<title>%s %s </title>" \
-							 "<h1>%s</h1>" \
-							 "<p>Webby WebServer %s" % (HTTP_CODE[response.status],response.status,HTTP_CODE[response.status],__version__)
+    def __init__(self,response):
+        self.response_body = "<html>" \
+                             "<title>%s %s </title>" \
+                             "<h1>%s</h1>" \
+                             "<p>Webby WebServer %s" % (HTTP_CODE[response.status],response.status,HTTP_CODE[response.status],__version__)
 
-	@property
-	def html(self):
-		return self.response_body
-		#modify to user templating
+    @property
+    def html(self):
+        return self.response_body
+        #modify to user templating
 
